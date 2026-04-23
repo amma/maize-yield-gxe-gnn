@@ -239,23 +239,29 @@ class GxEGAT(nn.Module):
         self.layers = nn.ModuleList(
             [GATv2Conv(hidden, hidden, heads=heads, concat=False, edge_dim=1, dropout=dropout) for _ in range(rounds)]
         )
+        self.norms = nn.ModuleList([nn.LayerNorm(hidden) for _ in range(rounds)])
         self.super_pool = SuperNodePool(hidden, pool_heads(hidden, heads), dropout)
         self.mlp = nn.Sequential(
-            nn.Linear(hidden * 2, hidden),
-            nn.LayerNorm(hidden),
+            nn.Linear(hidden * 2, 256),
+            nn.LayerNorm(256),
             nn.LeakyReLU(0.2),
             nn.Dropout(dropout),
-            nn.Linear(hidden, max(1, hidden // 2)),
-            nn.LayerNorm(max(1, hidden // 2)),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
             nn.LeakyReLU(0.2),
             nn.Dropout(dropout),
-            nn.Linear(max(1, hidden // 2), 1),
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout),
+            nn.Linear(64, 1),
         )
 
     def forward(self, data):
         x = self.value_proj(data.x) + self.type_embedding(data.node_type)
-        for layer in self.layers:
-            x = F.leaky_relu(layer(x, data.edge_index, data.edge_attr), 0.2)
+        for layer, norm in zip(self.layers, self.norms):
+            h = F.leaky_relu(layer(x, data.edge_index, data.edge_attr), 0.2)
+            x = norm(x + h)
         return self.mlp(self.super_pool(x, data.batch)).squeeze(-1)
 
 
