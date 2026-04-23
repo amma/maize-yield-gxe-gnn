@@ -138,28 +138,30 @@ class GxEGAT(nn.Module):
         self.layers = nn.ModuleList(
             [GATv2Conv(hidden, hidden, heads=heads, concat=False, edge_dim=1, dropout=dropout) for _ in range(rounds)]
         )
+        self.norms = nn.ModuleList([nn.LayerNorm(hidden) for _ in range(rounds)])
         self.mlp = nn.Sequential(
-            nn.Linear(hidden * 2, hidden),
-            nn.LayerNorm(hidden),
+            nn.Linear(hidden, 256),
+            nn.LayerNorm(256),
             nn.LeakyReLU(0.2),
             nn.Dropout(dropout),
-            nn.Linear(hidden, max(1, hidden // 2)),
-            nn.LayerNorm(max(1, hidden // 2)),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
             nn.LeakyReLU(0.2),
             nn.Dropout(dropout),
-            nn.Linear(max(1, hidden // 2), 1),
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout),
+            nn.Linear(64, 1),
         )
 
     def forward(self, data):
         x = self.value_proj(data.x) + self.type_embedding(data.node_type)
-        for layer in self.layers:
-            x = F.leaky_relu(layer(x, data.edge_index, data.edge_attr), 0.2)
+        for layer, norm in zip(self.layers, self.norms):
+            h = F.leaky_relu(layer(x, data.edge_index, data.edge_attr), 0.2)
+            x = norm(x + h)
         g_mask = data.node_type == 0
-        e_mask = data.node_type == 1
-        pooled = torch.cat(
-            [global_mean_pool(x[g_mask], data.batch[g_mask]), global_mean_pool(x[e_mask], data.batch[e_mask])],
-            dim=-1,
-        )
+        pooled = global_mean_pool(x[g_mask], data.batch[g_mask])
         return self.mlp(pooled).squeeze(-1)
 
 
