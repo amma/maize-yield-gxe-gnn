@@ -2,7 +2,9 @@
 
 The script groups weather observations by environment, trains a compact LSTM
 sequence autoencoder, and writes one learned summary vector per environment for
-the GxE-GNN training and test scripts.
+the GxE-GNN training and test scripts. The LSTM is trained as a separate
+environment-embedding step; the exported vectors are then used as fixed
+environment node features by the architecture scripts.
 """
 
 import argparse
