@@ -12,4 +12,3 @@ This repository is being prepared for public release. Scripts and reproducibilit
 - Supporting analysis scripts used for manuscript figures and results.
 - Data descriptions and links to public datasets where possible.
 
-Large raw datasets, generated model checkpoints, temporary files, and private credentials should not be committed to this public repository.
