@@ -207,15 +207,15 @@ def collate(batch):
 
 
 class GxEGAT(nn.Module):
-    def __init__(self, hidden, heads, dropout):
+    def __init__(self, hidden, heads, dropout, rounds):
         super().__init__()
         self.value_proj = nn.Linear(1, hidden)
         self.type_embedding = nn.Embedding(2, hidden)
-        self.conv1 = GATv2Conv(hidden, hidden, heads=heads, edge_dim=1, dropout=dropout)
-        self.conv2 = GATv2Conv(hidden * heads, hidden, heads=2, edge_dim=1, dropout=dropout)
-        self.conv3 = GATv2Conv(hidden * 2, hidden, heads=1, concat=False, edge_dim=1, dropout=dropout)
+        self.layers = nn.ModuleList(
+            [GATv2Conv(hidden, hidden, heads=heads, concat=False, edge_dim=1, dropout=dropout) for _ in range(rounds)]
+        )
         self.mlp = nn.Sequential(
-            nn.Linear(hidden, hidden),
+            nn.Linear(hidden * 2, hidden),
             nn.LayerNorm(hidden),
             nn.LeakyReLU(0.2),
             nn.Dropout(dropout),
@@ -228,11 +228,14 @@ class GxEGAT(nn.Module):
 
     def forward(self, data):
         x = self.value_proj(data.x) + self.type_embedding(data.node_type)
-        x = F.leaky_relu(self.conv1(x, data.edge_index, data.edge_attr), 0.2)
-        x = F.leaky_relu(self.conv2(x, data.edge_index, data.edge_attr), 0.2)
-        x = F.leaky_relu(self.conv3(x, data.edge_index, data.edge_attr), 0.2)
-        mask = data.node_type == 0
-        pooled = global_mean_pool(x[mask], data.batch[mask])
+        for layer in self.layers:
+            x = F.leaky_relu(layer(x, data.edge_index, data.edge_attr), 0.2)
+        g_mask = data.node_type == 0
+        e_mask = data.node_type == 1
+        pooled = torch.cat(
+            [global_mean_pool(x[g_mask], data.batch[g_mask]), global_mean_pool(x[e_mask], data.batch[e_mask])],
+            dim=-1,
+        )
         return self.mlp(pooled).squeeze(-1)
 
 
@@ -315,6 +318,7 @@ def main():
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--hidden", type=int, default=128)
     parser.add_argument("--heads", type=int, default=8)
+    parser.add_argument("--rounds", type=int, default=30)
     parser.add_argument("--dropout", type=float, default=0.25)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
@@ -344,7 +348,7 @@ def main():
 
     train_loader = make_loader(GxEDataset(train_df, geno_reduced, env_scaled, g2i, e2i, y_scaler, args.k), args.batch, args.workers, True, device)
     val_loader = make_loader(GxEDataset(val_df, geno_reduced, env_scaled, g2i, e2i, y_scaler, args.k), args.batch, args.workers, False, device)
-    model = GxEGAT(args.hidden, args.heads, args.dropout).to(device)
+    model = GxEGAT(args.hidden, args.heads, args.dropout, args.rounds).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=max(1, args.patience // 2))
     scaler = grad_scaler(device)
@@ -383,6 +387,7 @@ def main():
                     "hidden": args.hidden,
                     "heads": args.heads,
                     "dropout": args.dropout,
+                    "rounds": args.rounds,
                     "k": args.k,
                 },
                 outdir / "best_model.pt",
