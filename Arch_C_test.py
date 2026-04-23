@@ -165,7 +165,7 @@ def pool_heads(hidden, heads):
 class SuperNodePool(nn.Module):
     def __init__(self, hidden, heads, dropout):
         super().__init__()
-        self.query = nn.Parameter(torch.empty(1, 1, hidden))
+        self.query = nn.Parameter(torch.empty(1, 2, hidden))
         self.attention = nn.MultiheadAttention(hidden, heads, dropout=dropout, batch_first=True)
         self.norm = nn.LayerNorm(hidden)
         nn.init.xavier_uniform_(self.query)
@@ -176,21 +176,21 @@ class SuperNodePool(nn.Module):
             nodes = x[batch == graph_id].unsqueeze(0)
             query = self.query.expand(1, -1, -1)
             pooled, _ = self.attention(query, nodes, nodes)
-            out.append(self.norm(pooled[:, 0, :].squeeze(0)))
+            out.append(self.norm(pooled).reshape(-1))
         return torch.stack(out, dim=0)
 
 
 class GxEGAT(nn.Module):
-    def __init__(self, hidden, heads, dropout):
+    def __init__(self, hidden, heads, dropout, rounds):
         super().__init__()
         self.value_proj = nn.Linear(1, hidden)
         self.type_embedding = nn.Embedding(2, hidden)
-        self.conv1 = GATv2Conv(hidden, hidden, heads=heads, edge_dim=1, dropout=dropout)
-        self.conv2 = GATv2Conv(hidden * heads, hidden, heads=2, edge_dim=1, dropout=dropout)
-        self.conv3 = GATv2Conv(hidden * 2, hidden, heads=1, concat=False, edge_dim=1, dropout=dropout)
+        self.layers = nn.ModuleList(
+            [GATv2Conv(hidden, hidden, heads=heads, concat=False, edge_dim=1, dropout=dropout) for _ in range(rounds)]
+        )
         self.super_pool = SuperNodePool(hidden, pool_heads(hidden, heads), dropout)
         self.mlp = nn.Sequential(
-            nn.Linear(hidden, hidden),
+            nn.Linear(hidden * 2, hidden),
             nn.LayerNorm(hidden),
             nn.LeakyReLU(0.2),
             nn.Dropout(dropout),
@@ -203,9 +203,8 @@ class GxEGAT(nn.Module):
 
     def forward(self, data):
         x = self.value_proj(data.x) + self.type_embedding(data.node_type)
-        x = F.leaky_relu(self.conv1(x, data.edge_index, data.edge_attr), 0.2)
-        x = F.leaky_relu(self.conv2(x, data.edge_index, data.edge_attr), 0.2)
-        x = F.leaky_relu(self.conv3(x, data.edge_index, data.edge_attr), 0.2)
+        for layer in self.layers:
+            x = F.leaky_relu(layer(x, data.edge_index, data.edge_attr), 0.2)
         return self.mlp(self.super_pool(x, data.batch)).squeeze(-1)
 
 
@@ -243,7 +242,7 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
     checkpoint = load_checkpoint(args.model_path, device)
 
-    model = GxEGAT(checkpoint["hidden"], checkpoint["heads"], checkpoint["dropout"]).to(device)
+    model = GxEGAT(checkpoint["hidden"], checkpoint["heads"], checkpoint["dropout"], checkpoint.get("rounds", 30)).to(device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
 
